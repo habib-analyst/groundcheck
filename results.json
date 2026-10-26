@@ -1,0 +1,71 @@
+{
+  "model": "/home/hatch/workspace/goals/github-portfolio-linkedin-presence-buildout/hidden_files/builds/promptgate/models/all-MiniLM-L6-v2",
+  "seed": 20261026,
+  "eval_set": {
+    "total": 204,
+    "dev": 81,
+    "test": 123,
+    "test_supported": 29,
+    "test_unsupported": 94
+  },
+  "verifier": {
+    "combined": {
+      "precision": 0.9889,
+      "recall_catch_rate": 0.9468,
+      "f1": 0.9674,
+      "false_flag_rate": 0.0345,
+      "accuracy": 0.9512,
+      "tp": 89,
+      "fp": 1,
+      "fn": 5,
+      "tn": 28,
+      "threshold": 0.52
+    },
+    "embedding_only": {
+      "precision": 0.7845,
+      "recall_catch_rate": 0.9681,
+      "f1": 0.8667,
+      "false_flag_rate": 0.8621,
+      "accuracy": 0.7724,
+      "tp": 91,
+      "fp": 25,
+      "fn": 3,
+      "tn": 4,
+      "threshold": 0.8
+    },
+    "lexical_only": {
+      "precision": 1.0,
+      "recall_catch_rate": 0.9574,
+      "f1": 0.9783,
+      "false_flag_rate": 0.0,
+      "accuracy": 0.9675,
+      "tp": 90,
+      "fp": 0,
+      "fn": 4,
+      "tn": 29,
+      "threshold": 0.39
+    }
+  },
+  "catch_rate_by_subtype": {
+    "contradicted": 0.2857,
+    "hard_negative": 1.0,
+    "mutated_fact": 1.0,
+    "wrong_passage": 1.0
+  },
+  "end_to_end": {
+    "questions": 24,
+    "retrieval_recall_at_3": 1.0,
+    "total_claims": 48,
+    "raw_unsupported_claims": 27,
+    "raw_unsupported_rate": 0.5625,
+    "unsupported_catch_rate": 1.0,
+    "false_flag_rate_clean_claims": 0.0,
+    "repair_success_rate": 1.0,
+    "final_claims": 39,
+    "residual_unsupported_rate": 0.0,
+    "answers_flagged_low_confidence": 20,
+    "answer_level_flag_precision": 0.8,
+    "answer_level_flag_recall": 1.0,
+    "abstentions": 2
+  }
+}

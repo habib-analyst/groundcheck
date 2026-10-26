@@ -1,0 +1,166 @@
+import pytest
+
+from groundcheck.corpus import BY_ID, CLUSTERS, PASSAGES
+from groundcheck.evalset import build_items, split_dev_test
+from groundcheck.textutil import (
+    extract_numbers,
+    mutate_first_number,
+    number_agreement,
+    token_f1,
+)
+
+
+# ---- corpus & eval-set construction (no model needed) -------------------
+
+def test_corpus_integrity():
+    assert len(PASSAGES) == 24
+    assert len({p["id"] for p in PASSAGES}) == 24
+    assert all(len(p["claims"]) == 2 for p in PASSAGES)
+    assert all(len(ids) == 2 for ids in CLUSTERS.values())
+
+
+def test_gold_claims_are_supported_by_construction():
+    for p in PASSAGES:
+        for claim in p["claims"]:
+            assert number_agreement(claim, p["text"]) == 1.0
+
+
+def test_evalset_counts_and_labels():
+    items = build_items()
+    by_subtype = {}
+    for it in items:
+        by_subtype[it["subtype"]] = by_subtype.get(it["subtype"], 0) + 1
+    assert by_subtype == {
+        "supported": 48,
+        "wrong_passage": 48,
+        "hard_negative": 48,
+        "mutated_fact": 48,
+        "contradicted": 12,
+    }
+    assert sum(1 for it in items if it["label"] == "supported") == 48
+    assert sum(1 for it in items if it["label"] == "unsupported") == 156
+
+
+def test_evalset_deterministic():
+    assert build_items() == build_items()
+
+
+def test_split_partitions_all_items():
+    items = build_items()
+    dev, test = split_dev_test(items)
+    assert len(dev) + len(test) == len(items)
+    key = lambda it: (it["claim"], it["cited"], it["subtype"])
+    assert not ({key(i) for i in dev} & {key(i) for i in test})
+
+
+def test_mutated_items_really_unsupported():
+    for it in build_items():
+        if it["subtype"] == "mutated_fact":
+            assert number_agreement(it["claim"], BY_ID[it["cited"]]["text"]) == 0.0
+
+
+# ---- text utilities -------------------------------------------------------
+
+def test_textutil_numbers():
+    assert extract_numbers("about 10,935 metres and 2.5 cm") == [10935.0, 2.5]
+    assert number_agreement("It is 30 metres long.", "reaching 30 metres") == 1.0
+    assert number_agreement("It is 31 metres long.", "reaching 30 metres") == 0.0
+    assert number_agreement("No figures here.", "reaching 30 metres") == 0.5
+
+
+def test_token_f1_bounds():
+    assert token_f1("the cat sat", "the cat sat") > 0.9
+    assert token_f1("quantum bananas oscillate", "the cat sat") == 0.0
+
+
+def test_mutate_first_number():
+    out = mutate_first_number("The tower is 100 metres tall.", avoid_text="100 metres")
+    assert out is not None and "100" not in out.split("is")[1].split("metres")[0]
+    assert mutate_first_number("No numbers at all.") is None
+
+
+# ---- model-backed behaviour -------------------------------------------------
+
+@pytest.fixture(scope="session")
+def embedder():
+    from groundcheck.embed import Embedder
+
+    return Embedder()
+
+
+@pytest.fixture(scope="session")
+def scorer(embedder):
+    from groundcheck.verify import SupportScorer
+
+    return SupportScorer(embedder)
+
+
+def test_supported_scores_above_wrong_passage(scorer):
+    p = BY_ID["P01"]
+    claim = p["claims"][0]
+    good = scorer.score(claim, "P01", p["text"])
+    bad = scorer.score(claim, "P03", BY_ID["P03"]["text"])
+    assert good > bad
+    assert good >= 0.55
+
+
+def test_mutated_claim_is_capped(scorer):
+    p = BY_ID["P01"]
+    mutated = mutate_first_number(p["claims"][0], avoid_text=p["text"])
+    res = scorer.features(mutated, "P01", p["text"])
+    assert res.num_agreement == 0.0
+    assert res.score <= 0.40
+
+
+def test_retrieval_finds_target(embedder):
+    from groundcheck.retrieve import Retriever
+
+    r = Retriever(embedder)
+    for pid in ("P01", "P10", "P21"):
+        top = [x for x, _ in r.search(BY_ID[pid]["question"], k=3)]
+        assert pid in top
+
+
+@pytest.fixture(scope="session")
+def agent(embedder):
+    from groundcheck.pipeline import GroundCheckAgent
+
+    return GroundCheckAgent(embedder, threshold=0.55)
+
+
+def _claim(text, cited, true):
+    return dict(text=text, cited=cited, true_passage=true, truth="manual")
+
+
+def test_pipeline_keeps_clean_claim(agent):
+    p = BY_ID["P01"]
+    out = agent.process_claim(_claim(p["claims"][0], "P01", "P01"))
+    assert out["action"] == "kept"
+
+
+def test_pipeline_repairs_wrong_citation(agent):
+    p = BY_ID["P01"]
+    out = agent.process_claim(_claim(p["claims"][0], "P03", "P01"))
+    assert out["action"] == "repaired"
+    assert out["cited_final"] == "P01"
+
+
+def test_pipeline_drops_mutated_claim(agent):
+    p = BY_ID["P01"]
+    mutated = mutate_first_number(p["claims"][0], avoid_text=p["text"])
+    out = agent.process_claim(_claim(mutated, "P01", "P01"))
+    assert out["action"] == "dropped"
+
+
+def test_fallback_finds_nothing_for_alien_claim(agent):
+    best_id, best_score = agent.fallback_search(
+        "The stock index rose by 12 percent in 1999 after the central bank cut rates."
+    )
+    assert best_score < agent.threshold
+
+
+def test_agent_answer_structure(agent):
+    ans = agent.answer(BY_ID["P05"]["question"], "P05")
+    assert len(ans["claims"]) == 2
+    assert isinstance(ans["low_confidence"], bool)
+    assert 0.0 <= ans["confidence"] <= 1.0
