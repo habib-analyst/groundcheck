@@ -67,5 +67,52 @@
     "answer_level_flag_precision": 0.8,
     "answer_level_flag_recall": 1.0,
     "abstentions": 2
+  },
+  "nli_model": "/home/hatch/workspace/build/groundcheck-v2/models/nli-MiniLM2-L6-H768",
+  "verifier_v2": {
+    "precision": 0.9792,
+    "recall_catch_rate": 1.0,
+    "f1": 0.9895,
+    "false_flag_rate": 0.069,
+    "accuracy": 0.9837,
+    "tp": 94,
+    "fp": 2,
+    "fn": 0,
+    "tn": 27,
+    "threshold": 0.52,
+    "nli_threshold": 0.65
+  },
+  "catch_rate_by_subtype_v2": {
+    "contradicted": 1.0,
+    "hard_negative": 1.0,
+    "mutated_fact": 1.0,
+    "wrong_passage": 1.0
+  },
+  "end_to_end_v2": {
+    "questions": 24,
+    "retrieval_recall_at_3": 1.0,
+    "total_claims": 48,
+    "raw_unsupported_claims": 27,
+    "raw_unsupported_rate": 0.5625,
+    "unsupported_catch_rate": 1.0,
+    "false_flag_rate_clean_claims": 0.0476,
+    "repair_success_rate": 1.0,
+    "final_claims": 38,
+    "residual_unsupported_rate": 0.0,
+    "answers_flagged_low_confidence": 21,
+    "answer_level_flag_precision": 0.7619,
+    "answer_level_flag_recall": 1.0,
+    "abstentions": 2
+  },
+  "prereg_verdict": {
+    "contradiction_catch_v2": 1.0,
+    "bar_contradiction_catch_gt_0_70": true,
+    "bar_f1_ge_0_95": true,
+    "guard_precision_ge_0_95": true,
+    "guard_recall_ge_v1": true,
+    "guard_e2e_residual_zero": true,
+    "guard_e2e_false_flag_le_0_05": true,
+    "primary_bar_met": true,
+    "guard_holds": true
   }
 }

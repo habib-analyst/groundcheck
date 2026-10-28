@@ -1,135 +1,143 @@
-# groundcheck: citation-support verification inside the RAG loop
+# groundcheck v2: an NLI contradiction veto for citation verification
 
 ## Abstract
 
-RAG answers carry citations, but citations are rarely checked: a cited
-passage may be off-topic, on-topic but about different facts, or silent
-about the numbers the sentence asserts. groundcheck adds a verification
-stage inside the agent loop. Each (claim, cited passage) pair is scored
-by a local, deterministic fusion of embedding similarity
-(all-MiniLM-L6-v2), token F1, and a number-agreement rule; failures
-trigger a corpus-wide fallback search that repairs the citation or
-drops the claim, and answers are flagged low-confidence accordingly.
-On a planted ground-truth set of 204 (claim, citation) pairs with exact
-labels, the combined verifier flags unsupported citations with
-precision 0.989 and recall 0.947 (test split, n=123). End-to-end, a
-noisy generator's 56.3% raw unsupported-claim rate is reduced to a 0.0%
-residual rate on a 24-question run, with no clean claim falsely
-flagged. The clear failure mode is contradicted claims (28.6% caught):
-similarity is not entailment, and this paper reports that plainly.
+groundcheck v1 verifies RAG citations with a local fusion of embedding
+similarity, token F1 and number agreement, and its paper reported the
+failure mode plainly: **contradicted claims were caught only 28.6% of
+the time**, because a claim that negates its passage keeps the same
+words and numbers, so every similarity signal scores it as supported.
+v2 adds exactly one stage aimed at that hole: a local NLI model
+(cross-encoder/nli-MiniLM2-L6-H768, run on CPU, no API) whose
+P(contradiction) for (passage, claim) acts as a **veto** — a citation
+is flagged if the v1 score fails *or* the veto fires. On the same
+planted ground-truth benchmark (204 items, identical split, v1
+numbers recomputed in the same run), the veto raises the contradicted
+catch rate from **0.286 to 1.000** (7/7 test items) and overall recall
+from 0.947 to 1.000, at a small precision cost (0.989 → 0.979: the
+veto false-fires on one supported claim). F1 improves 0.967 → 0.990.
+End-to-end, the residual unsupported rate stays 0.0% and repair
+accuracy stays 100%, with one clean claim falsely flagged (4.8%).
+Bars and tuning protocol were pre-registered in PREREG.md before the
+run; both the primary bar and the no-regression guard passed.
 
-## 1. Method
+## 1. What changed (and what did not)
 
-**Support score.** For claim *c* and cited passage *p*:
+**Unchanged:** the corpus, the planted evaluation set and split, the
+v1 support score and its fusion weights, the fallback repair/drop
+pipeline, the generator and its noise rates. v1 metrics in this paper
+were recomputed by the v2 run and reproduce v1's published numbers
+exactly (P 0.989 / R 0.947 / F1 0.967, contradicted 0.286).
 
-    score = 0.55 · cos(MiniLM(c), MiniLM(p)) + 0.30 · tokenF1(c, p)
-          + 0.15 · numAgreement(c, p)
+**Added:** for each (claim, cited passage) pair, an NLI forward pass
+with premise = passage, hypothesis = claim. Decision rule:
 
-where numAgreement is 1 if every number in *c* appears in *p*, 0 if
-any is missing, 0.5 if *c* has no numbers. If numAgreement = 0 the
-score is capped at 0.40: a claim whose figures are absent from its
-citation cannot be rescued by topical similarity.
+    flag as unsupported  iff  v1_score < tau  OR  P(contradiction) >= tau_nli
 
-**Decision + fallback.** score ≥ τ (τ tuned on dev) → citation stands.
-Otherwise the claim is scored against every passage in the corpus; if
-the best passage clears τ and differs from the cited one, the citation
-is replaced (repair). If nothing clears τ, the claim is dropped. An
-answer is low-confidence if any claim was repaired or dropped or its
-mean final score < 0.65; an answer with no surviving claims becomes an
-abstention.
+The veto is deliberately *not* blended into the score: a weighted sum
+would let high similarity outvote a contradiction, which is precisely
+the v1 failure. In the pipeline, the same veto gates both claim
+verification and fallback-repair acceptance (a repair may not point a
+claim at a passage that contradicts it).
 
-**Why these signals.** Embedding similarity alone cannot separate
-support from topical relatedness (measured below: 86.2% false-flag rate
-at its best threshold — it fires on nearly everything or nothing).
-Lexical overlap grounds the claim's wording; the number rule targets
-the highest-harm failure, invented quantities, which both similarity
-signals are blind to because a mutated claim differs from a supported
-one by a single token.
+**Thresholds.** tau = 0.52 tuned on dev exactly as v1. tau_nli = 0.65
+tuned on the dev split only, by the locked PREREG protocol
+(F1-maximising grid 0.05–0.95, ties toward larger tau_nli).
 
-## 2. Evaluation design
+## 2. Results
 
-**Corpus.** 24 short encyclopedia-style passages in 12 topic clusters
-of two related passages with disjoint facts (e.g. Mariana Trench vs
-Mid-Atlantic Ridge). Cluster-mates create hard negatives: same topic,
-wrong facts. Each passage has two gold claims it supports.
+Verifier, test split (n=123; 29 supported / 94 unsupported; positive
+class = unsupported):
 
-**Planted set (204 items).** For each gold claim: (a) cited to its own
-passage — *supported*; (b) cited to a random other-cluster passage —
-*wrong_passage*; (c) cited to its cluster-mate — *hard_negative*;
-(d) first number perturbed ×1.37 and cited to its true passage —
-*mutated_fact*. Plus 12 hand-written *contradicted* claims. Labels are
-known by construction; no annotation or LLM judging is involved.
-Stratified split: dev 81 (threshold tuning only), test 123 (29
-supported / 94 unsupported) for all reported numbers.
+| Scorer | Precision | Recall | F1 | False-flag |
+|---|---|---|---|---|
+| v1 combined | 0.989 | 0.947 | 0.967 | 3.4% |
+| **v2 (v1 + NLI veto)** | **0.979** | **1.000** | **0.990** | **6.9%** |
+| v1 embedding-only | 0.785 | 0.968 | 0.867 | 86.2% |
+| v1 lexical-only | 1.000 | 0.957 | 0.978 | 0.0% |
 
-**End-to-end.** A template generator composes answers from gold claims
-and plants noise (30% wrong citations, 15% number mutations). 24
-questions, 48 claims, ground truth tracked per claim. A claim counts
-as truly supported in the final answer iff it is unmutated and its
-final citation is its source passage.
+Catch rate by subtype:
 
-## 3. Results
+| Subtype | v1 | v2 |
+|---|---|---|
+| wrong_passage | 1.000 | 1.000 |
+| hard_negative | 1.000 | 1.000 |
+| mutated_fact | 1.000 | 1.000 |
+| **contradicted** | **0.286** | **1.000** |
 
-Verifier, test split (positive class = unsupported):
+End-to-end (24 questions, 48 claims, identical planted noise):
 
-| Scorer | τ | Precision | Recall | F1 | False-flag |
-|---|---|---|---|---|---|
-| combined | 0.52 | 0.989 | 0.947 | 0.967 | 3.4% |
-| embedding-only | 0.80 | 0.785 | 0.968 | 0.867 | 86.2% |
-| lexical-only | 0.39 | 1.000 | 0.957 | 0.978 | 0.0% |
+| Metric | v1 | v2 |
+|---|---|---|
+| Raw unsupported rate | 56.3% | 56.3% |
+| Unsupported caught | 100% | 100% |
+| Repair success | 100% | 100% |
+| Residual unsupported in final answers | 0.0% | 0.0% |
+| Clean claims falsely flagged | 0.0% (0/21) | 4.8% (1/21) |
+| Final surviving claims | 39 | 38 |
+| Answer-level flags: precision / recall | 0.80 / 1.00 | 0.76 / 1.00 |
+| Abstentions | 2 | 2 |
 
-Catch rate by subtype (combined): wrong_passage 1.000, hard_negative
-1.000, mutated_fact 1.000, contradicted 0.286.
+**PREREG verdict:** primary bar met (contradiction catch 1.000 >
+0.70; F1 0.990 ≥ 0.95); no-regression guard holds (precision 0.979 ≥
+0.95; recall ≥ v1; residual 0.0; false-flag 0.048 ≤ 0.05).
 
-End-to-end: retrieval recall@3 1.000; raw unsupported rate 0.563
-(27/48); unsupported catch rate 1.000; repair success 1.000 (every
-repaired citation pointed at the claim's true passage); residual
-unsupported rate in final answers 0.000 (0/39 surviving claims);
-false-flag rate on clean claims 0.000; answer-level low-confidence
-flags: precision 0.80, recall 1.00 (20/24 answers flagged); 2
-abstentions where all claims were dropped.
+## 3. Item-level honesty
 
-## 4. Failure analysis (the honest part)
+The aggregate hides three facts worth stating:
 
-**Contradicted claims pass.** 5 of 7 contradicted test items were
-missed. A negated claim reuses the passage's vocabulary and numbers,
-so all three signals score it as supported. The scorer has no negation
-handling and no entailment model; this is a real ceiling of the
-approach, not a tuning issue. A production version needs an NLI or
-negation-aware term, at the cost of the current determinism/simplicity.
+- **The veto caught exactly the items v1 missed, on this set.** All 5
+  contradicted test items that passed v1's score (0.53–0.64) have
+  P(contradiction) 0.91–1.00. The two signals are complementary here,
+  not redundant.
+- **The NLI model has its own blind spot, and v1 covered it.** "Information
+  can travel faster than the speed of light, according to relativity"
+  gets P(contradiction) = 0.037 — the model reads the attribution and
+  calls it entailment. That item is caught by the v1 score (0.495 <
+  0.52), not the veto. Likewise the vague-quantifier contradiction
+  ("the brain consumes only a negligible share…", P(contradiction) =
+  0.237) is invisible to the veto. An NLI stage is not a negation
+  oracle; it is one more fallible signal.
+- **The veto's cost is real and specific.** Its one false fire on the
+  test split is a true claim — "Tim Berners-Lee invented the World
+  Wide Web in 1989 at CERN" — scored P(contradiction) = 0.974 against
+  the passage that states exactly that. That single error is the whole
+  precision dip (0.989 → 0.979), the end-to-end false flag (1/21 clean
+  claims), and one surviving claim fewer in final answers (38 vs 39).
+  On a larger corpus this rate, not the headline F1, is what would
+  need watching.
 
-**Lexical beats combined — on this set.** Gold claims are
-extractive-style paraphrases, so token F1 is nearly a label leak. The
-combined scorer's embedding term adds noise here and slightly trails
-lexical-only (F1 0.967 vs 0.978). The honest reading: this benchmark
-cannot demonstrate the embedding term's value; a paraphrase-heavy claim
-set is needed for that, and it does not exist yet in this project.
+## 4. Limitations (carried over and new)
 
-**Small scale.** 24 passages / 24 questions. End-to-end perfection
-(0 residual) is a statement about this toy regime — planted noise of
-exactly the types the scorer was built for — not about LLM-generated
-answers in the wild.
+- Same toy regime as v1: 24 self-authored passages, extractive-style
+  gold claims, template generator. 7 contradicted test items is a
+  small denominator — 1.000 means 7/7, and the honest confidence
+  interval around it is wide. Nothing here measures paraphrase-heavy
+  or LLM-generated claims.
+- The NLI model adds ~330 MB of weights and real latency (a full
+  benchmark run is minutes on a contended 2-core VM; per-claim
+  pipeline checks are single forward passes). v1's "no model beyond
+  embeddings" simplicity is gone; that is the price of the entailment
+  signal, and it is paid knowingly.
+- Contradiction is judged against the whole passage as one premise.
+  Long real-world passages with mixed support would need
+  sentence-level NLI; unmeasured here.
+- Thresholds (tau, tau_nli) are fitted to this corpus family on an
+  81-item dev split; transfer is unmeasured, same caveat as v1.
 
-## 5. Limitations
-
-- Synthetic, self-authored corpus and claims; facts are common
-  knowledge, paraphrased.
-- Template generator, not an LLM; fluent-but-wrong prose, multi-hop
-  claims, and partial support are out of scope. "Partially supported"
-  is not modelled: support is binary by construction.
-- Threshold and fusion weights are fitted to this corpus family;
-  transfer to other corpora is unmeasured.
-- The fallback searches only the local corpus; "fall back to search"
-  beyond the corpus (web) is an interface, not an implementation.
-
-## 6. Reproduction
+## 5. Reproduction
 
 ```bash
 pip install -e .
-GROUNDCHECK_MODEL=<all-MiniLM-L6-v2 dir> PYTHONPATH=src python -m groundcheck.evaluate
-pytest
+# local all-MiniLM-L6-v2 dir + local NLI dir (see README for the
+# curl commands that fetch the NLI weights):
+GROUNDCHECK_MODEL=<all-MiniLM-L6-v2 dir> \
+GROUNDCHECK_NLI_MODEL=<nli-MiniLM2-L6-H768 dir> \
+  PYTHONPATH=src python -m groundcheck.evaluate   # writes results.json
+pytest                              # 22 tests
 ```
 
-Deterministic: fixed seeds (eval set 20261026, generator 7), CPU-only,
-no network calls at evaluation time. `results.json` in this repository
-was produced by exactly this command.
+Deterministic: fixed seeds (eval set 20261026, generator 7),
+CPU-only, no network calls at evaluation time. `results.json` in this
+repository was produced by exactly this command; PREREG.md records
+the bars that were locked before it ran.

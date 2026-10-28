@@ -164,3 +164,87 @@ def test_agent_answer_structure(agent):
     assert len(ans["claims"]) == 2
     assert isinstance(ans["low_confidence"], bool)
     assert 0.0 <= ans["confidence"] <= 1.0
+
+
+# ---- v2: NLI contradiction veto ------------------------------------------
+
+class StubNLI:
+    """Deterministic NLI stand-in: flags pairs whose hypothesis carries
+    a marker word, so veto logic can be tested without the real model."""
+
+    def __init__(self, marker="CONTRADICTS"):
+        self.marker = marker
+
+    def contradiction_probs(self, pairs):
+        return [0.99 if self.marker in h else 0.01 for _, h in pairs]
+
+
+def test_veto_logic_on_support_result():
+    from groundcheck.verify import SupportResult
+
+    res = SupportResult(score=0.9, emb_sim=0.9, lex_f1=0.9, num_agreement=1.0)
+    assert not res.vetoed(0.5)  # no NLI attached -> never vetoed
+    assert not res.flagged_v2(0.52, 0.5)
+    res.nli_contradiction = 0.9
+    assert res.vetoed(0.5)
+    assert res.flagged_v2(0.52, 0.5)  # passes v1 score, vetoed by NLI
+    res.nli_contradiction = 0.2
+    assert not res.flagged_v2(0.52, 0.5)
+    res.score = 0.3
+    assert res.flagged_v2(0.52, 0.5)  # v1 failure still flags
+
+
+@pytest.fixture(scope="session")
+def agent_v2(embedder):
+    from groundcheck.pipeline import GroundCheckAgent
+
+    return GroundCheckAgent(
+        embedder, threshold=0.55, nli=StubNLI(), nli_threshold=0.5
+    )
+
+
+def test_pipeline_v2_drops_vetoed_claim(agent_v2):
+    p = BY_ID["P15"]
+    claim = "CONTRADICTS: " + p["claims"][0]  # stub vetoes this pair
+    out = agent_v2.process_claim(_claim(claim, "P15", "P15"))
+    assert out["vetoed"] is True
+    assert out["action"] == "dropped"  # no non-vetoed passage supports it
+
+
+def test_pipeline_v2_keeps_clean_claim(agent_v2):
+    p = BY_ID["P01"]
+    out = agent_v2.process_claim(_claim(p["claims"][0], "P01", "P01"))
+    assert out["vetoed"] is False
+    assert out["action"] == "kept"
+
+
+def test_attach_nli_batch_fills_results(embedder):
+    from groundcheck.verify import SupportScorer
+
+    scorer = SupportScorer(embedder)
+    items = build_items()[:6]
+    scored = [
+        (it, scorer.features(it["claim"], it["cited"], BY_ID[it["cited"]]["text"]))
+        for it in items
+    ]
+    assert all(r.nli_contradiction is None for _, r in scored)
+    scorer.attach_nli(scored, StubNLI())
+    assert all(r.nli_contradiction == 0.01 for _, r in scored)
+
+
+def test_real_nli_model_if_available(embedder):
+    """Runs only when GROUNDCHECK_NLI_MODEL points at a local model dir."""
+    import os
+
+    model_dir = os.environ.get("GROUNDCHECK_NLI_MODEL", "")
+    if not model_dir or not os.path.isdir(model_dir):
+        pytest.skip("no local NLI model configured")
+    from groundcheck.corpus import CONTRADICTED
+    from groundcheck.nli import NLIClassifier
+
+    nli = NLIClassifier(model_dir)
+    probs = nli.probs(BY_ID["P04"]["text"], CONTRADICTED[1][1])
+    assert probs["contradiction"] > 0.9
+    gold = BY_ID["P04"]["claims"][0]
+    probs = nli.probs(BY_ID["P04"]["text"], gold)
+    assert probs["contradiction"] < 0.1
